@@ -18,6 +18,12 @@ import {
   executeContextStudioQuery,
   convertBlueprintSchemaToGeminiSchema
 } from './gemini.ts';
+import {
+  buildChatbotSchemaArchitectPrompt,
+  buildChatbotDataExtractionPrompt,
+  extractJsonFromClipboardText,
+  normalizeParsedChatbotSchema
+} from '../src/utils/clipboardBridge.ts';
 
 describe('Strux Core Lifecycle & SRD Verification', () => {
   initDb();
@@ -116,5 +122,59 @@ describe('Strux Core Lifecycle & SRD Verification', () => {
 
     const deleted = deleteRecord(rec.id);
     expect(deleted).toBe(true);
+  });
+
+  it('generates tailored chatbot prompts and parses fenced JSON responses from clipboard', () => {
+    const rpgBp = getBlueprintById('bp-ttrpg-encounters')!;
+
+    // 1. Schema Architect prompt & clipboard parser
+    const archPrompt = buildChatbotSchemaArchitectPrompt({
+      userInput: 'Track sci-fi starships with hull class, crew count, and weapons array'
+    });
+    expect(archPrompt).toContain(PROMPT_A_SCHEMA_ARCHITECT);
+    expect(archPrompt).toContain('STRICT OUTPUT FORMAT INSTRUCTIONS');
+
+    const simulatedChatbotSchemaReply = `Sure! Here is your JSON schema:\n\`\`\`json\n{
+      "name": "Starship Fleet Registry",
+      "description": "Tracks starships and weapons",
+      "icon": "Cpu",
+      "extraction_prompt_template": "Keep specs accurate",
+      "fields": [
+        { "field_name": "ship_name", "type": "string", "description": "Vessel name", "required": true },
+        { "field_name": "hull_class", "type": "string", "description": "Class", "required": true, "enum_values": ["Frigate", "Cruiser", "Dreadnought"] }
+      ]
+    }\n\`\`\`\nLet me know if you need adjustments!`;
+
+    const parsedSchemaObj = extractJsonFromClipboardText(simulatedChatbotSchemaReply);
+    const normalized = normalizeParsedChatbotSchema(parsedSchemaObj);
+    expect(normalized.name).toBe('Starship Fleet Registry');
+    expect(normalized.json_schema.properties.hull_class.enum).toEqual([
+      'Frigate',
+      'Cruiser',
+      'Dreadnought'
+    ]);
+
+    // 2. Data Extraction prompt & clipboard parser
+    const extractPrompt = buildChatbotDataExtractionPrompt({
+      blueprint: rpgBp,
+      rawText: 'The Sunken Crypt at Old Harbor. Deadly combat.',
+      mode: 'single'
+    });
+    expect(extractPrompt).toContain(PROMPT_B_DATA_EXTRACTOR);
+    expect(extractPrompt).toContain('TTRPG Encounters & Intrigue');
+
+    const simulatedChatbotExtractionReply = `Here is the extracted JSON:\n\`\`\`json\n[
+      {
+        "title": "The Sunken Crypt",
+        "location": "Old Harbor",
+        "intensity_level": "Deadly",
+        "encounter_type": "Tactical Combat",
+        "motive": "Guard the relic",
+        "clues": ["Ancient rune"]
+      }
+    ]\n\`\`\``;
+    const extracted = extractJsonFromClipboardText(simulatedChatbotExtractionReply);
+    expect(Array.isArray(extracted)).toBe(true);
+    expect(extracted[0].title).toBe('The Sunken Crypt');
   });
 });

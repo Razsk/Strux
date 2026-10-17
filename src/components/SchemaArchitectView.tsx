@@ -12,11 +12,20 @@ import {
   AlertCircle,
   Copy,
   FilePlus2,
-  ArrowRight
+  ArrowRight,
+  ClipboardCopy,
+  ClipboardPaste,
+  Eye,
+  Check
 } from 'lucide-react';
 import type { Blueprint, SchemaFieldType, SchemaProperty } from '../types';
 import { api } from '../api';
 import { BlueprintIcon, ICON_OPTIONS } from './BlueprintIcon';
+import {
+  buildChatbotSchemaArchitectPrompt,
+  extractJsonFromClipboardText,
+  normalizeParsedChatbotSchema
+} from '../utils/clipboardBridge';
 
 interface SchemaArchitectViewProps {
   blueprints: Blueprint[];
@@ -89,6 +98,12 @@ export function SchemaArchitectView({
     message: string;
   } | null>(null);
 
+  // External Chatbot Clipboard Bridge state
+  const [copiedPromptType, setCopiedPromptType] = useState<'new' | 'refine' | null>(null);
+  const [showPromptInspector, setShowPromptInspector] = useState(false);
+  const [manualPasteDrawer, setManualPasteDrawer] = useState(false);
+  const [manualPasteText, setManualPasteText] = useState('');
+
   useEffect(() => {
     if (activeBlueprint) {
       loadBlueprintIntoForm(activeBlueprint);
@@ -157,7 +172,7 @@ export function SchemaArchitectView({
     setRawSchemaJson(JSON.stringify(buildJsonSchemaFromRows(initialRows), null, 2));
     setStatusBanner({
       type: 'info',
-      message: 'Started a fresh Blueprint draft. Use the AI Meta-Prompt Architect or customize fields below.'
+      message: 'Started a fresh Blueprint draft. Use the AI Meta-Prompt Architect or Copy Chatbot Prompt below.'
     });
   }
 
@@ -196,6 +211,93 @@ export function SchemaArchitectView({
       properties,
       required
     };
+  }
+
+  function getActiveChatbotPrompt(isRefinement = false): string {
+    const inputText = isRefinement
+      ? refinementInput.trim() || domainInput.trim()
+      : domainInput.trim();
+    return buildChatbotSchemaArchitectPrompt({
+      userInput:
+        inputText ||
+        `Design a comprehensive schema for "${name}" (${description})`,
+      isRefinement,
+      currentBlueprint: isRefinement
+        ? {
+            name,
+            description,
+            extraction_prompt_template: extractionRules,
+            json_schema: buildJsonSchemaFromRows(fields)
+          }
+        : undefined
+    });
+  }
+
+  async function handleCopyChatbotPrompt(isRefinement = false) {
+    try {
+      const promptStr = getActiveChatbotPrompt(isRefinement);
+      await navigator.clipboard.writeText(promptStr);
+      setCopiedPromptType(isRefinement ? 'refine' : 'new');
+      setStatusBanner({
+        type: 'info',
+        message:
+          'Tailored Schema Architect prompt copied to your clipboard! Paste it into any chatbot (ChatGPT, Claude, Gemini), copy its JSON reply, then click "Read & Parse Output from Clipboard".'
+      });
+      setTimeout(() => setCopiedPromptType(null), 3500);
+    } catch (err: any) {
+      setShowPromptInspector(true);
+      setStatusBanner({
+        type: 'error',
+        message: `Clipboard write blocked by browser (${err.message}). Expanded prompt below for manual copy.`
+      });
+    }
+  }
+
+  function applyImportedChatbotText(rawText: string, asRefinement = false) {
+    const parsedJson = extractJsonFromClipboardText(rawText);
+    const normalized = normalizeParsedChatbotSchema(parsedJson);
+
+    if (!asRefinement) {
+      setEditingId(null);
+    }
+    setName(normalized.name);
+    setDescription(normalized.description);
+    setIcon(normalized.icon);
+    setPrimaryField(normalized.primaryField);
+    setSubtitleField(normalized.subtitleField);
+    setExtractionRules(normalized.extraction_prompt_template);
+
+    const newRows: EditableFieldRow[] = Object.entries(
+      normalized.json_schema.properties || {}
+    ).map(([k, p]) => ({
+      field_name: k,
+      type: p.type || 'string',
+      description: p.description || '',
+      required: Boolean(normalized.json_schema.required?.includes(k)),
+      enum_csv: (p.enum || p.items?.enum || []).join(', ')
+    }));
+
+    setFields(newRows);
+    setRawSchemaJson(JSON.stringify(normalized.json_schema, null, 2));
+    setManualPasteDrawer(false);
+    setManualPasteText('');
+    setStatusBanner({
+      type: 'success',
+      message: `Parsed "${normalized.name}" (${newRows.length} fields) directly from your clipboard! Review fields below and click Save Blueprint.`
+    });
+  }
+
+  async function handleReadSchemaFromClipboard(asRefinement = false) {
+    try {
+      const clipText = await navigator.clipboard.readText();
+      applyImportedChatbotText(clipText, asRefinement);
+    } catch (err: any) {
+      setManualPasteDrawer(true);
+      setStatusBanner({
+        type: 'error',
+        message: `${err.message || 'Could not read clipboard directly.'} You can also paste the chatbot output into the box below.`
+      });
+    }
   }
 
   async function handleGenerateFromPrompt(isRefinement: boolean) {
@@ -248,7 +350,7 @@ export function SchemaArchitectView({
       setStatusBanner({
         type: 'success',
         message: designed.simulated
-          ? 'Schema designed via local Architect rules (Add a Gemini API Key in Settings for live Gemini 2.5 Flash meta-prompting). Review and click Save Blueprint.'
+          ? 'Schema designed via local Architect rules (or use the Chatbot Clipboard Bridge on the left). Review and click Save Blueprint.'
           : 'Schema designed via Gemini 2.5 Flash Structured Outputs! Review fields and click Save Blueprint.'
       });
     } catch (err: any) {
@@ -342,7 +444,7 @@ export function SchemaArchitectView({
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-      {/* Left Column: Blueprint Library + AI Meta-Prompt Designer */}
+      {/* Left Column: Blueprint Library + AI Meta-Prompt Designer + Chatbot Clipboard Bridge */}
       <div className="xl:col-span-4 space-y-6">
         {/* Saved Blueprints List */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 shadow-lg">
@@ -364,7 +466,7 @@ export function SchemaArchitectView({
             </button>
           </div>
 
-          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
             {blueprints.map((bp) => {
               const isSelected = bp.id === editingId;
               return (
@@ -421,18 +523,21 @@ export function SchemaArchitectView({
           </div>
         </div>
 
-        {/* Meta-Prompt Architect Generator */}
-        <div className="bg-slate-900/90 border border-indigo-500/30 rounded-xl p-5 shadow-lg relative overflow-hidden">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400">
-              <Wand2 className="w-4 h-4" />
+        {/* Meta-Prompt Architect Generator & Chatbot Clipboard Bridge */}
+        <div className="bg-slate-900/90 border border-indigo-500/30 rounded-xl p-5 shadow-lg space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400">
+                <Wand2 className="w-4 h-4" />
+              </div>
+              <h3 className="text-sm font-semibold text-white">
+                AI Schema Architect (Meta-Prompt)
+              </h3>
             </div>
-            <h3 className="text-sm font-semibold text-white">
-              AI Schema Architect (Meta-Prompt)
-            </h3>
           </div>
-          <p className="text-xs text-slate-400 mb-3 leading-relaxed">
-            Describe what you want to track in natural language or paste a sample of messy notes. Gemini proposes a rigorous Draft-07 / OpenAPI 3.0 compatible JSON Schema.
+
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Describe what you want to track in natural language or paste a sample of messy text:
           </p>
 
           <textarea
@@ -443,7 +548,7 @@ export function SchemaArchitectView({
             className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none p-3 text-xs text-slate-100 placeholder-slate-500 resize-none"
           />
 
-          <div className="mt-2 flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             {SAMPLE_META_PROMPTS.map((sample) => (
               <button
                 key={sample.label}
@@ -456,18 +561,123 @@ export function SchemaArchitectView({
             ))}
           </div>
 
+          {/* Direct API Execution Button */}
           <button
             onClick={() => handleGenerateFromPrompt(false)}
             disabled={isGenerating || !domainInput.trim()}
-            className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white shadow-md shadow-indigo-950/50 transition cursor-pointer"
+            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white shadow-md shadow-indigo-950/50 transition cursor-pointer"
           >
             <Sparkles className="w-4 h-4" />
-            {isGenerating ? 'Architecting JSON Schema...' : 'Propose New Schema via AI'}
+            {isGenerating ? 'Architecting JSON Schema...' : 'Propose New Schema via API'}
           </button>
 
+          {/* Chatbot Clipboard Bridge Card */}
+          <div className="p-3.5 rounded-xl bg-slate-950/90 border border-emerald-500/30 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">
+                Chatbot Clipboard Bridge (Copy → Paste)
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowPromptInspector(!showPromptInspector)}
+                className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                <Eye className="w-3 h-3" />
+                {showPromptInspector ? 'Hide Prompt' : 'Preview Prompt'}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Use any external chatbot (ChatGPT, Claude, Gemini): copy the tailored prompt in 1 click, then read & parse the chatbot's JSON response straight from your clipboard.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleCopyChatbotPrompt(false)}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-indigo-200 border border-indigo-500/40 transition cursor-pointer"
+              >
+                {copiedPromptType === 'new' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    Prompt Copied!
+                  </>
+                ) : (
+                  <>
+                    <ClipboardCopy className="w-3.5 h-3.5 text-indigo-400" />
+                    1. Copy Prompt
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleReadSchemaFromClipboard(false)}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-200 border border-emerald-500/40 transition cursor-pointer"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 text-emerald-400" />
+                2. Read Clipboard JSON
+              </button>
+            </div>
+
+            {showPromptInspector && (
+              <div className="pt-2 space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                  <span>TAILORED SCHEMA ARCHITECT PROMPT</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyChatbotPrompt(false)}
+                    className="text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                  >
+                    Copy Text
+                  </button>
+                </div>
+                <pre className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-300 max-h-48 overflow-y-auto whitespace-pre-wrap">
+                  {getActiveChatbotPrompt(false)}
+                </pre>
+              </div>
+            )}
+
+            {manualPasteDrawer && (
+              <div className="pt-2 space-y-2 border-t border-slate-800">
+                <span className="text-[11px] text-amber-300 block">
+                  Paste Chatbot JSON Response Manually:
+                </span>
+                <textarea
+                  value={manualPasteText}
+                  onChange={(e) => setManualPasteText(e.target.value)}
+                  rows={4}
+                  placeholder="Paste the chatbot response (even with ```json fences) here..."
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 p-2 font-mono text-xs text-emerald-300"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setManualPasteDrawer(false)}
+                    className="px-2.5 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        applyImportedChatbotText(manualPasteText, false);
+                      } catch (e: any) {
+                        setStatusBanner({ type: 'error', message: e.message });
+                      }
+                    }}
+                    className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Parse Pasted Output
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Interactive AI Refinement Chat */}
-          <div className="mt-5 pt-4 border-t border-slate-800">
-            <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300 mb-2">
+          <div className="pt-3 border-t border-slate-800 space-y-2">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
               <MessageSquarePlus className="w-3.5 h-3.5 text-indigo-400" />
               Interactive AI Field Refinement
             </label>
@@ -488,6 +698,14 @@ export function SchemaArchitectView({
                 className="px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-indigo-300 border border-slate-700 transition cursor-pointer"
               >
                 Tweak
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCopyChatbotPrompt(true)}
+                title="Copy refinement prompt including current schema to clipboard"
+                className="px-2.5 py-2 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 transition cursor-pointer"
+              >
+                <ClipboardCopy className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>

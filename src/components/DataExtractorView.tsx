@@ -10,11 +10,18 @@ import {
   Trash2,
   Code2,
   Eye,
-  ArrowRight
+  ArrowRight,
+  ClipboardCopy,
+  ClipboardPaste,
+  Check
 } from 'lucide-react';
 import type { Blueprint, StagedExtractionItem } from '../types';
 import { api } from '../api';
 import { BlueprintIcon } from './BlueprintIcon';
+import {
+  buildChatbotDataExtractionPrompt,
+  extractJsonFromClipboardText
+} from '../utils/clipboardBridge';
 
 interface DataExtractorViewProps {
   blueprints: Blueprint[];
@@ -67,7 +74,7 @@ Relationships:
   'bp-server-nodes': {
     single: `Incident Handoff Note:
 Node prod-llm-gateway-09.internal (IP 10.24.30.88) in us-east-1c is currently in Degraded state in Production.
-Specs: 64 CPU cores, 256 GB RAM.Owned by the Inference Platform Squad.
+Specs: 64 CPU cores, 256 GB RAM. Owned by the Inference Platform Squad.
 Active services running: vllm-router, envoy-ingress, prometheus-exporter, rate-limiter-redis.
 Notes: Experiencing intermittent CUDA out-of-memory spikes when handling 64k context requests. Needs tensor-parallel flag adjustment during tonight's maintenance window.`,
     batch: `Server Inventory Dump:
@@ -98,6 +105,11 @@ export function DataExtractorView({
     text: string;
   } | null>(null);
 
+  // External Chatbot Clipboard Bridge state
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [manualPasteDrawer, setManualPasteDrawer] = useState(false);
+  const [manualPasteText, setManualPasteText] = useState('');
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   function handleLoadSample(targetMode: 'single' | 'batch') {
@@ -125,6 +137,94 @@ export function DataExtractorView({
       }
     };
     reader.readAsText(file);
+  }
+
+  function getTailoredChatbotPrompt(): string {
+    if (!selectedBp) return '';
+    return buildChatbotDataExtractionPrompt({
+      blueprint: selectedBp,
+      rawText,
+      mode,
+      customInstructions
+    });
+  }
+
+  async function handleCopyChatbotPrompt() {
+    if (!selectedBp) return;
+    const fullPrompt = getTailoredChatbotPrompt();
+    setPromptPreview(fullPrompt);
+    try {
+      await navigator.clipboard.writeText(fullPrompt);
+      setCopiedPrompt(true);
+      setBanner({
+        type: 'success',
+        text: `Tailored "${selectedBp.name}" extraction prompt written to your clipboard! Paste it into your chatbot, copy the JSON output, then click "2. Read & Parse Output from Clipboard".`
+      });
+      setTimeout(() => setCopiedPrompt(false), 3500);
+    } catch (err: any) {
+      setShowPromptModal(true);
+      setBanner({
+        type: 'warning',
+        text: `Browser blocked direct clipboard write (${err.message}). Expanded tailored prompt on the right so you can copy it manually.`
+      });
+    }
+  }
+
+  async function processExtractedClipboardText(clipText: string) {
+    if (!selectedBp) return;
+    const parsed = extractJsonFromClipboardText(clipText);
+    const rawArray: Record<string, any>[] = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.items)
+      ? parsed.items
+      : [parsed];
+
+    if (rawArray.length === 0) {
+      throw new Error('Parsed JSON array is empty.');
+    }
+
+    const validatedList: StagedExtractionItem[] = await Promise.all(
+      rawArray.map(async (obj, idx) => {
+        const validation = await api.validateRecord(selectedBp.id, obj);
+        return {
+          tempId: `clip-${Date.now()}-${idx}`,
+          data: obj,
+          raw_source: rawText.trim() || 'Extracted via External Chatbot Clipboard Bridge',
+          isValid: validation.isValid,
+          validationErrors: validation.validationErrors,
+          selected: true
+        };
+      })
+    );
+
+    const drafts: Record<string, string> = {};
+    for (const s of validatedList) {
+      drafts[s.tempId] = JSON.stringify(s.data, null, 2);
+    }
+
+    setStagedItems(validatedList);
+    setJsonEditDrafts(drafts);
+    setManualPasteDrawer(false);
+    setManualPasteText('');
+
+    const validCount = validatedList.filter((i) => i.isValid).length;
+    setBanner({
+      type: validCount === validatedList.length ? 'success' : 'warning',
+      text: `Parsed ${validatedList.length} JSON object(s) from clipboard (${validCount} schema-valid)! Review in the Staging Inspector below and click Commit.`
+    });
+  }
+
+  async function handleReadExtractionFromClipboard() {
+    try {
+      const clipText = await navigator.clipboard.readText();
+      await processExtractedClipboardText(clipText);
+    } catch (err: any) {
+      setManualPasteDrawer(true);
+      setBanner({
+        type: 'error',
+        text: `${err.message || 'Could not read clipboard.'} You can also paste the chatbot JSON reply in the manual box below.`
+      });
+    }
   }
 
   async function handleRunExtractor() {
@@ -163,7 +263,7 @@ export function DataExtractorView({
       setBanner({
         type: result.simulated ? 'warning' : 'success',
         text: result.simulated
-          ? `Extracted ${staged.length} structured JSON object(s) using local schema-locked parser (Add a Gemini API Key in Settings for live Gemini 2.5 Flash extraction). Review in the Staging Inspector below.`
+          ? `Extracted ${staged.length} structured JSON object(s) using local schema-locked parser (or use the Chatbot Clipboard Bridge on the left). Review in the Staging Inspector below.`
           : `Extracted ${staged.length} schema-validated JSON object(s) via Gemini 2.5 Flash responseSchema!`
       });
     } catch (err: any) {
@@ -350,7 +450,7 @@ export function DataExtractorView({
             <textarea
               value={rawText}
               onChange={(e) => setRawText(e.target.value)}
-              rows={10}
+              rows={8}
               placeholder="Paste messy notes, meeting transcripts, markdown brain-dumps, or log snippets here..."
               className="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none p-3.5 text-xs text-slate-100 placeholder-slate-500 leading-relaxed"
             />
@@ -376,13 +476,104 @@ export function DataExtractorView({
           <button
             onClick={handleRunExtractor}
             disabled={isExtracting || !rawText.trim() || !selectedBp}
-            className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white shadow-lg shadow-indigo-950/60 transition cursor-pointer"
+            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white shadow-lg shadow-indigo-950/60 transition cursor-pointer"
           >
             <Sparkles className="w-4 h-4" />
             {isExtracting
               ? 'Running Schema-Locked Extraction...'
-              : `Extract into ${selectedBp?.name || 'Blueprint'}`}
+              : `Extract via API into ${selectedBp?.name || 'Blueprint'}`}
           </button>
+
+          {/* Chatbot Clipboard Bridge for Unstructured Data Extraction */}
+          <div className="p-4 rounded-xl bg-slate-950/90 border border-emerald-500/30 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">
+                Chatbot Clipboard Bridge (Prompt → Parse JSON)
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setPromptPreview(getTailoredChatbotPrompt());
+                  setShowPromptModal(!showPromptModal);
+                }}
+                className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                <Eye className="w-3 h-3" />
+                {showPromptModal ? 'Hide Prompt' : 'Preview Prompt'}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Generate a tailored extraction prompt containing your schema, field descriptions, and raw text directly to your clipboard. Paste into any chatbot, copy its JSON response, and read it back in one click.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handleCopyChatbotPrompt}
+                disabled={!selectedBp}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-indigo-200 border border-indigo-500/40 transition cursor-pointer"
+              >
+                {copiedPrompt ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    Copied to Clipboard!
+                  </>
+                ) : (
+                  <>
+                    <ClipboardCopy className="w-3.5 h-3.5 text-indigo-400" />
+                    1. Copy Tailored Prompt
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleReadExtractionFromClipboard}
+                disabled={!selectedBp}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-200 border border-emerald-500/40 transition cursor-pointer"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 text-emerald-400" />
+                2. Read & Parse Clipboard
+              </button>
+            </div>
+
+            {manualPasteDrawer && (
+              <div className="pt-2 space-y-2 border-t border-slate-800">
+                <span className="text-[11px] text-amber-300 block">
+                  Paste Chatbot JSON Output Manually:
+                </span>
+                <textarea
+                  value={manualPasteText}
+                  onChange={(e) => setManualPasteText(e.target.value)}
+                  rows={4}
+                  placeholder="Paste the chatbot JSON response here..."
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 p-2.5 font-mono text-xs text-emerald-300"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setManualPasteDrawer(false)}
+                    className="px-2.5 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await processExtractedClipboardText(manualPasteText);
+                      } catch (e: any) {
+                        setBanner({ type: 'error', text: e.message });
+                      }
+                    }}
+                    className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Parse Pasted JSON
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -411,21 +602,29 @@ export function DataExtractorView({
           </div>
         )}
 
-        {showPromptModal && promptPreview && (
+        {showPromptModal && (promptPreview || selectedBp) && (
           <div className="bg-slate-900 border border-indigo-500/40 rounded-xl p-4 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wider">
-                Constructed Extraction Prompt Engine Payload
+                Tailored Extraction Prompt (Ready for Chatbot or API)
               </span>
-              <button
-                onClick={() => setShowPromptModal(false)}
-                className="text-xs text-slate-400 hover:text-white cursor-pointer"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleCopyChatbotPrompt}
+                  className="text-xs text-emerald-400 hover:text-emerald-300 font-medium cursor-pointer"
+                >
+                  Copy to Clipboard
+                </button>
+                <button
+                  onClick={() => setShowPromptModal(false)}
+                  className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
-            <pre className="p-3 rounded-lg bg-slate-950 text-[11px] font-mono text-slate-300 whitespace-pre-wrap max-h-56 overflow-y-auto border border-slate-800">
-              {promptPreview}
+            <pre className="p-3 rounded-lg bg-slate-950 text-[11px] font-mono text-slate-300 whitespace-pre-wrap max-h-64 overflow-y-auto border border-slate-800">
+              {promptPreview || getTailoredChatbotPrompt()}
             </pre>
           </div>
         )}
@@ -476,7 +675,7 @@ export function DataExtractorView({
                   No Extracted Objects in Staging Yet
                 </h4>
                 <p className="text-xs text-slate-400 mt-1">
-                  Paste messy text on the left (or click <strong>Load Single/Batch Sample</strong>) and run the extractor to preview schema-validated JSON records side-by-side with your source text.
+                  Paste messy text on the left, then either click <strong>Extract via API</strong> or use the <strong>Chatbot Clipboard Bridge</strong> (<em>1. Copy Tailored Prompt</em> → paste into your chatbot → <em>2. Read & Parse Clipboard</em>).
                 </p>
               </div>
             </div>
