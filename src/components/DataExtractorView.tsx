@@ -28,6 +28,7 @@ interface DataExtractorViewProps {
   activeBlueprint: Blueprint | null;
   onSelectBlueprint: (bp: Blueprint) => void;
   onRecordsCommitted: (blueprintId: string, count: number) => void;
+  onBlueprintUpdated?: (bp: Blueprint) => void;
 }
 
 const SAMPLE_UNSTRUCTURED_DUMPS: Record<string, { single: string; batch: string }> = {
@@ -88,13 +89,39 @@ export function DataExtractorView({
   blueprints,
   activeBlueprint,
   onSelectBlueprint,
-  onRecordsCommitted
+  onRecordsCommitted,
+  onBlueprintUpdated
 }: DataExtractorViewProps) {
   const selectedBp = activeBlueprint || blueprints[0] || null;
   const [rawText, setRawText] = useState('');
   const [mode, setMode] = useState<'single' | 'batch'>('batch');
+  const [blueprintHint, setBlueprintHint] = useState(
+    selectedBp?.extraction_prompt_template || ''
+  );
   const [customInstructions, setCustomInstructions] = useState('');
+  const [isSavingHint, setIsSavingHint] = useState(false);
+  const [savedHintSuccess, setSavedHintSuccess] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
+
+  React.useEffect(() => {
+    setBlueprintHint(selectedBp?.extraction_prompt_template || '');
+    setSavedHintSuccess(false);
+  }, [selectedBp?.id, selectedBp?.extraction_prompt_template]);
+
+  async function handleSaveBlueprintHint() {
+    if (!selectedBp) return;
+    setIsSavingHint(true);
+    try {
+      const updated = await api.updateBlueprint(selectedBp.id, {
+        extraction_prompt_template: blueprintHint.trim()
+      });
+      onBlueprintUpdated?.(updated);
+      setSavedHintSuccess(true);
+      setTimeout(() => setSavedHintSuccess(false), 3000);
+    } finally {
+      setIsSavingHint(false);
+    }
+  }
   const [isCommitting, setIsCommitting] = useState(false);
   const [stagedItems, setStagedItems] = useState<StagedExtractionItem[]>([]);
   const [jsonEditDrafts, setJsonEditDrafts] = useState<Record<string, string>>({});
@@ -142,7 +169,10 @@ export function DataExtractorView({
   function getTailoredChatbotPrompt(): string {
     if (!selectedBp) return '';
     return buildChatbotDataExtractionPrompt({
-      blueprint: selectedBp,
+      blueprint: {
+        ...selectedBp,
+        extraction_prompt_template: blueprintHint.trim()
+      },
       rawText,
       mode,
       customInstructions
@@ -456,21 +486,56 @@ export function DataExtractorView({
             />
           </div>
 
-          {/* Runtime Extraction Override Instructions */}
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-              Additional Extraction Directives (Optional)
-            </label>
-            <input
-              type="text"
-              value={customInstructions}
-              onChange={(e) => setCustomInstructions(e.target.value)}
-              placeholder={
-                selectedBp?.extraction_prompt_template ||
-                'e.g., Translate all values to English and keep tone concise'
-              }
-              className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none px-3 py-2 text-xs text-slate-200"
+          {/* Blueprint-Specific Prompt Hints & Domain Rules */}
+          <div className="p-3.5 rounded-xl bg-slate-950/80 border border-indigo-500/30 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
+                Blueprint-Specific Prompt Hints ({selectedBp?.name})
+              </label>
+              <button
+                type="button"
+                onClick={handleSaveBlueprintHint}
+                disabled={
+                  isSavingHint ||
+                  !selectedBp ||
+                  blueprintHint.trim() === (selectedBp.extraction_prompt_template || '').trim()
+                }
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-indigo-600/30 hover:bg-indigo-600/50 disabled:opacity-40 text-indigo-200 border border-indigo-500/40 transition cursor-pointer"
+              >
+                {savedHintSuccess ? (
+                  <>
+                    <Check className="w-3 h-3 text-emerald-400" /> Saved to Blueprint
+                  </>
+                ) : (
+                  <>
+                    <Database className="w-3 h-3" /> Save Hint to Blueprint
+                  </>
+                )}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Domain-specific parsing hints saved directly on this Blueprint and injected into every extraction prompt (e.g., splitting <code className="text-indigo-300">"Saga of the Iron Dragon #5"</code> into series name + book number).
+            </p>
+            <textarea
+              rows={3}
+              value={blueprintHint}
+              onChange={(e) => setBlueprintHint(e.target.value)}
+              placeholder="e.g., If a series name contains a number (like 'Saga of the Iron Dragon #5'), strip the number from 'series' and place the numeric book index in 'series_number'."
+              className="w-full rounded-lg bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:outline-none p-2.5 text-xs text-slate-100 leading-relaxed"
             />
+
+            <div className="pt-1">
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                One-Off Run Override (Optional)
+              </label>
+              <input
+                type="text"
+                value={customInstructions}
+                onChange={(e) => setCustomInstructions(e.target.value)}
+                placeholder="Optional extra hint just for this paste..."
+                className="w-full rounded-lg bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:outline-none px-2.5 py-1.5 text-xs text-slate-200"
+              />
+            </div>
           </div>
 
           <button

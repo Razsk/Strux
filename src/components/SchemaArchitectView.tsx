@@ -865,7 +865,7 @@ export function SchemaArchitectView({
               </select>
             </div>
 
-            <div className="md:col-span-6">
+            <div className="md:col-span-12">
               <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1">
                 Domain Description
               </label>
@@ -877,16 +877,21 @@ export function SchemaArchitectView({
               />
             </div>
 
-            <div className="md:col-span-6">
-              <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1">
-                Custom Extraction Rules (Blueprint Prompt Template)
-              </label>
-              <input
-                type="text"
+            <div className="md:col-span-12">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
+                  Blueprint-Specific Prompt Hints & Extraction Rules (Injected into Every Extraction Prompt)
+                </label>
+                <span className="text-[11px] text-slate-500">
+                  Saved with this Blueprint (`extraction_prompt_template`)
+                </span>
+              </div>
+              <textarea
+                rows={3}
                 value={extractionRules}
                 onChange={(e) => setExtractionRules(e.target.value)}
-                placeholder="e.g., Translate all values to English and keep tone concise."
-                className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none px-3 py-2 text-xs text-slate-200"
+                placeholder="e.g., If a series name contains a number (like 'Saga of the Iron Dragon #5'), strip the number from 'series' ('Saga of the Iron Dragon') and store 5 in 'series_number'."
+                className="w-full rounded-lg bg-slate-950 border border-indigo-500/40 focus:border-indigo-500 focus:outline-none p-3 text-xs text-slate-100 leading-relaxed"
               />
             </div>
           </div>

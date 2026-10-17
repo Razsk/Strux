@@ -364,6 +364,7 @@ export function App() {
               blueprints={blueprints}
               activeBlueprint={activeBlueprint}
               onSelectBlueprint={(bp) => setActiveBlueprint(bp)}
+              onBlueprintUpdated={(updated) => refreshBlueprints(updated)}
               onRecordsCommitted={async (bpId) => {
                 await refreshRecords();
                 const found = blueprints.find((b) => b.id === bpId);
