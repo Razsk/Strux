@@ -7,7 +7,7 @@ export const PROMPT_A_SCHEMA_ARCHITECT =
   "You are the Strux Schema Architect. Your goal is to analyze the user's domain description or sample unstructured text and design an optimal, rigorous JSON Schema. Every property must include a clear description attribute, because those descriptions will later act as instructions for an LLM extractor. Favor clean, predictable data types (strings, arrays of strings, enums, booleans, numbers) and avoid overly deep nesting unless necessary.";
 
 export const PROMPT_B_DATA_EXTRACTOR =
-  "You are the Strux Data Ingestion Engine. Extract information from the provided unstructured text and map it strictly into the provided JSON Schema. Follow the instructions in each field's description. Do not invent facts not present or implied in the source text; if a non-required field is missing, omit it or set it to null. Output valid JSON matching the schema.";
+  "You are the Strux Data Ingestion Engine. Extract information from the provided unstructured text and map it strictly into the provided JSON Schema. Expect the unstructured text to potentially contain several different entities/instances—identify, parse, and import every distinct instance into its own separate JSON object following this schema rather than collapsing multiple entities into one. Follow the instructions in each field's description. Do not invent facts not present or implied in the source text; if a non-required field is missing, omit it or set it to null. Output valid JSON matching the schema.";
 
 export function resolveApiKey(headerKey?: string): string | null {
   if (headerKey && headerKey.trim()) return headerKey.trim();
@@ -399,8 +399,12 @@ export async function extractStructuredData(params: {
 
   const dynamicPrompt = [
     `Blueprint Target: ${blueprint.name} (${blueprint.description})`,
-    `Extraction Mode: ${mode === 'batch' ? 'Batch Extraction (Extract ALL distinct items found in the text as a JSON Array)' : 'Single Object Extraction (Synthesize into 1 JSON object)'}`,
-    `\nSchema Field Instructions:\n${fieldDescriptions}`,
+    `Multi-Instance Extraction Directive: ${
+      mode === 'batch'
+        ? 'Expect the unstructured text to describe SEVERAL different instances/entities (not just one). Identify every distinct instance in the input and extract each one as a separate JSON object inside the returned JSON Array.'
+        : 'Single Object Extraction (Synthesize into 1 JSON object)'
+    }`,
+    `\nSchema Field Instructions (Per Instance):\n${fieldDescriptions}`,
     combinedRules ? `\nCustom Extraction Rules:\n${combinedRules}` : '',
     `\n--- RAW UNSTRUCTURED INPUT ---\n${rawText}`
   ]

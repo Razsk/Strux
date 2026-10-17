@@ -4,7 +4,7 @@ export const PROMPT_A_SCHEMA_ARCHITECT =
   "You are the Strux Schema Architect. Your goal is to analyze the user's domain description or sample unstructured text and design an optimal, rigorous JSON Schema. Every property must include a clear description attribute, because those descriptions will later act as instructions for an LLM extractor. Favor clean, predictable data types (strings, arrays of strings, enums, booleans, numbers) and avoid overly deep nesting unless necessary.";
 
 export const PROMPT_B_DATA_EXTRACTOR =
-  "You are the Strux Data Ingestion Engine. Extract information from the provided unstructured text and map it strictly into the provided JSON Schema. Follow the instructions in each field's description. Do not invent facts not present or implied in the source text; if a non-required field is missing, omit it or set it to null. Output valid JSON matching the schema.";
+  "You are the Strux Data Ingestion Engine. Extract information from the provided unstructured text and map it strictly into the provided JSON Schema. Expect the unstructured text to potentially contain several different entities/instances—identify, parse, and import every distinct instance into its own separate JSON object following this schema rather than collapsing multiple entities into one. Follow the instructions in each field's description. Do not invent facts not present or implied in the source text; if a non-required field is missing, omit it or set it to null. Output valid JSON matching the schema.";
 
 /**
  * Generates a self-contained prompt that the user can paste into any external LLM chatbot
@@ -66,10 +66,10 @@ Respond ONLY with a single valid JSON object (no markdown commentary before or a
 export function buildChatbotDataExtractionPrompt(params: {
   blueprint: Blueprint;
   rawText: string;
-  mode: 'single' | 'batch';
+  mode?: 'single' | 'batch';
   customInstructions?: string;
 }): string {
-  const { blueprint, rawText, mode, customInstructions } = params;
+  const { blueprint, rawText, mode = 'batch', customInstructions } = params;
 
   const fieldDescriptions = Object.entries(blueprint.json_schema.properties || {})
     .map(([key, prop]) => {
@@ -89,33 +89,39 @@ export function buildChatbotDataExtractionPrompt(params: {
     .filter(Boolean)
     .join('\n');
 
-  // Construct an example skeleton object matching the blueprint
-  const exampleObj: Record<string, any> = {};
+  // Construct two example skeleton objects so the LLM clearly sees it should output multiple instances
+  const exampleObj1: Record<string, any> = {};
+  const exampleObj2: Record<string, any> = {};
   for (const [key, prop] of Object.entries(blueprint.json_schema.properties || {})) {
     if (prop.enum && prop.enum.length > 0) {
-      exampleObj[key] = prop.enum[0];
+      exampleObj1[key] = prop.enum[0];
+      exampleObj2[key] = prop.enum[Math.min(1, prop.enum.length - 1)];
     } else if (prop.type === 'string') {
-      exampleObj[key] = `<${prop.description || key}>`;
+      exampleObj1[key] = `<Instance 1: ${prop.description || key}>`;
+      exampleObj2[key] = `<Instance 2: ${prop.description || key}>`;
     } else if (prop.type === 'array') {
-      exampleObj[key] = [`<item 1 for ${key}>`, `<item 2 for ${key}>`];
+      exampleObj1[key] = [`<Instance 1 item A for ${key}>`, `<Instance 1 item B for ${key}>`];
+      exampleObj2[key] = [`<Instance 2 item A for ${key}>`];
     } else if (prop.type === 'integer' || prop.type === 'number') {
-      exampleObj[key] = 0;
+      exampleObj1[key] = 1;
+      exampleObj2[key] = 2;
     } else if (prop.type === 'boolean') {
-      exampleObj[key] = true;
+      exampleObj1[key] = true;
+      exampleObj2[key] = false;
     }
   }
 
   const expectedFormatExample =
-    mode === 'batch'
-      ? JSON.stringify([exampleObj], null, 2)
-      : JSON.stringify(exampleObj, null, 2);
+    mode === 'single'
+      ? JSON.stringify(exampleObj1, null, 2)
+      : JSON.stringify([exampleObj1, exampleObj2], null, 2);
 
   return `${PROMPT_B_DATA_EXTRACTOR}
 
 ### TARGET BLUEPRINT: ${blueprint.name}
 ${blueprint.description}
 
-### TARGET JSON SCHEMA DEFINITION
+### TARGET JSON SCHEMA DEFINITION (PER INSTANCE)
 \`\`\`json
 ${JSON.stringify(blueprint.json_schema, null, 2)}
 \`\`\`
@@ -123,22 +129,24 @@ ${JSON.stringify(blueprint.json_schema, null, 2)}
 ### FIELD-BY-FIELD EXTRACTION INSTRUCTIONS
 ${fieldDescriptions}
 ${rules ? `\n### ADDITIONAL EXTRACTION RULES\n${rules}\n` : ''}
-### EXTRACTION MODE
+### MULTI-INSTANCE PARSING & IMPORT DIRECTIVE
 ${
-  mode === 'batch'
-    ? 'BATCH EXTRACTION: Extract ALL distinct entities/items from the unstructured text below and return a JSON Array of objects (`[ { ... }, { ... } ]`).'
-    : 'SINGLE OBJECT EXTRACTION: Extract the information from the unstructured text below into a single JSON object (`{ ... }`).'
+  mode === 'single'
+    ? 'SINGLE OBJECT MODE: Synthesize the unstructured text below into 1 JSON object (`{ ... }`).'
+    : 'MULTI-INSTANCE BATCH MODE: You MUST expect the unstructured source text to describe **several different instances/entities** (not just a single entity). Carefully scan the entire text, separate each distinct instance, and output a **JSON Array (`[ { ... }, { ... }, ... ]`)** containing a dedicated JSON object for every instance found so they can all be imported in bulk.'
 }
 
 ### RAW UNSTRUCTURED SOURCE TEXT
 """
-${rawText.trim() || '(Paste your unstructured text here)'}
+${rawText.trim() || '(Paste your unstructured text containing one or more entities here)'}
 """
 
 ---
 ### STRICT OUTPUT FORMAT INSTRUCTIONS
 Respond ONLY with valid JSON matching the schema above (${
-    mode === 'batch' ? 'a JSON Array `[...]`' : 'a single JSON Object `{...}`'
+    mode === 'single'
+      ? 'a single JSON Object `{...}`'
+      : 'a JSON Array of objects `[ {...}, {...} ]` representing all extracted instances'
   }). Do not include any conversational filler outside the JSON block:
 
 \`\`\`json

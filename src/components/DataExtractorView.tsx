@@ -92,7 +92,7 @@ export function DataExtractorView({
 }: DataExtractorViewProps) {
   const selectedBp = activeBlueprint || blueprints[0] || null;
   const [rawText, setRawText] = useState('');
-  const [mode, setMode] = useState<'single' | 'batch'>('single');
+  const [mode, setMode] = useState<'single' | 'batch'>('batch');
   const [customInstructions, setCustomInstructions] = useState('');
   const [isExtracting, setIsExtracting] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
