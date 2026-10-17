@@ -182,7 +182,7 @@ export async function designOrRefineSchema(params: {
       : `User Domain Description or Sample Unstructured Text:\n${prompt}`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: userMessage,
       config: {
         systemInstruction: PROMPT_A_SCHEMA_ARCHITECT,
@@ -420,7 +420,7 @@ export async function extractStructuredData(params: {
         : singleSchema;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: dynamicPrompt,
       config: {
         systemInstruction: PROMPT_B_DATA_EXTRACTOR,
@@ -551,7 +551,7 @@ ${contextJsonBlock}
     if (targetBlueprintForGeneration) {
       const singleSchema = convertBlueprintSchemaToGeminiSchema(targetBlueprintForGeneration.json_schema);
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: `${userQuery}\n\nGenerate a new valid JSON item strictly conforming to the "${targetBlueprintForGeneration.name}" schema, grounded in the context payload above.`,
         config: {
           systemInstruction: fullSystemPrompt,
@@ -571,7 +571,7 @@ ${contextJsonBlock}
     }
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: userQuery,
       config: {
         systemInstruction: fullSystemPrompt,
@@ -591,7 +591,7 @@ ${contextJsonBlock}
   if (targetBlueprintForGeneration) {
     const sampleGen = buildSynthesizedRecord(targetBlueprintForGeneration, contextRecords, userQuery);
     return {
-      answer: `*(Demo Synthesis Mode — Add a Gemini API Key in Settings for live \`gemini-2.5-flash\` execution)*\n\nSynthesized a new **${targetBlueprintForGeneration.name}** object derived from **${contextRecords.length}** active context record(s). Use the **Save to Collection** button to persist it directly into **${targetBlueprintForGeneration.name}**.`,
+      answer: `*(Demo Synthesis Mode — Add a Gemini API Key in Settings for live \`gemini-3.8-flash\` execution)*\n\nSynthesized a new **${targetBlueprintForGeneration.name}** object derived from **${contextRecords.length}** active context record(s). Use the **Save to Collection** button to persist it directly into **${targetBlueprintForGeneration.name}**.`,
       generatedObject: sampleGen,
       simulated: true,
       estimatedTokens
@@ -605,7 +605,7 @@ ${contextJsonBlock}
 
   const synthesizedAnswer = [
     `### Grounded Context Analysis (${contextRecords.length} Structured Records)`,
-    `> *Running in local synthesis mode. Configure your \`GEMINI_API_KEY\` in the top-right Settings dialog to run live \`gemini-2.5-flash\` inference.*`,
+    `> *Running in local synthesis mode. Configure your \`GEMINI_API_KEY\` in the top-right Settings dialog to run live \`gemini-3.8-flash\` inference.*`,
     '',
     `**Active Context Sources:** ${titles.join(', ') || 'None selected'}`,
     '',

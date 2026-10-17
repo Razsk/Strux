@@ -286,7 +286,7 @@ export function App() {
               />
               <div className="text-left">
                 <div className="text-xs font-semibold text-white">
-                  {hasApiKey ? 'Gemini 2.5 Flash Live' : 'Configure Gemini Key'}
+                  {hasApiKey ? 'Gemini 3.8 Flash Live' : 'Configure Gemini Key'}
                 </div>
                 <div className="text-[10px] text-slate-400">
                   {hasApiKey ? 'responseSchema Active' : 'Local Synthesis Active'}
@@ -424,7 +424,7 @@ export function App() {
 
             <div className="space-y-2">
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300">
-                Google Gemini API Key (@google/genai — gemini-2.5-flash)
+                Google Gemini API Key (@google/genai — gemini-3.8-flash)
               </label>
               <p className="text-xs text-slate-400">
                 Provide your Gemini API key to run live schema generation, strict{' '}

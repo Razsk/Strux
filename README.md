@@ -1,6 +1,6 @@
 # Strux — AI-Powered Structured Data & Context Manager
 
-**Strux** is a full-stack web application that transforms messy, unstructured text into rigorous, schema-validated JSON collections using the **Google Gemini API (`@google/genai` / `gemini-2.5-flash`)** and **`responseSchema` Structured Outputs**.
+**Strux** is a full-stack web application that transforms messy, unstructured text into rigorous, schema-validated JSON collections using the **Google Gemini API (`@google/genai` / `gemini-3.8-flash`)** and **`responseSchema` Structured Outputs**.
 
 ---
 
@@ -40,7 +40,7 @@
 - **Frontend**: React 19, Vite, TypeScript, Tailwind CSS v4, Lucide Icons
 - **Backend / API Layer**: Node.js, Express, TypeScript (`tsx`), `ajv` JSON Schema validator
 - **Database / Persistence**: SQLite (`node:sqlite` WAL mode) storing `blueprints`, `records`, `saved_prompts`, and `app_settings`
-- **AI Integration**: `@google/genai` official Google Gen AI SDK (`gemini-2.5-flash` with `responseMimeType: "application/json"` and `responseSchema`)
+- **AI Integration**: `@google/genai` official Google Gen AI SDK (`gemini-3.8-flash` with `responseMimeType: "application/json"` and `responseSchema`)
 
 ---
 

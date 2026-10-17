@@ -351,7 +351,7 @@ export function SchemaArchitectView({
         type: 'success',
         message: designed.simulated
           ? 'Schema designed via local Architect rules (or use the Chatbot Clipboard Bridge on the left). Review and click Save Blueprint.'
-          : 'Schema designed via Gemini 2.5 Flash Structured Outputs! Review fields and click Save Blueprint.'
+          : 'Schema designed via Gemini 3.8 Flash Structured Outputs! Review fields and click Save Blueprint.'
       });
     } catch (err: any) {
       setStatusBanner({

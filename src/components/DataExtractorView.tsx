@@ -264,7 +264,7 @@ export function DataExtractorView({
         type: result.simulated ? 'warning' : 'success',
         text: result.simulated
           ? `Extracted ${staged.length} structured JSON object(s) using local schema-locked parser (or use the Chatbot Clipboard Bridge on the left). Review in the Staging Inspector below.`
-          : `Extracted ${staged.length} schema-validated JSON object(s) via Gemini 2.5 Flash responseSchema!`
+          : `Extracted ${staged.length} schema-validated JSON object(s) via Gemini 3.8 Flash responseSchema!`
       });
     } catch (err: any) {
       setBanner({

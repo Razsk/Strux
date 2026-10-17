@@ -47,7 +47,7 @@ app.get('/api/status', (req, res) => {
   res.json({
     status: 'ok',
     hasApiKey: Boolean(key),
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     systemPrompts: {
       schemaArchitect: PROMPT_A_SCHEMA_ARCHITECT,
       dataExtractor: PROMPT_B_DATA_EXTRACTOR
