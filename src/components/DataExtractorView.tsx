@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   FileUp,
   Sparkles,
@@ -13,9 +13,12 @@ import {
   ArrowRight,
   ClipboardCopy,
   ClipboardPaste,
-  Check
+  Check,
+  Key,
+  GitMerge,
+  PlusCircle
 } from 'lucide-react';
-import type { Blueprint, StagedExtractionItem } from '../types';
+import type { Blueprint, StagedExtractionItem, StagedMergeStrategy, StruxRecord } from '../types';
 import { api } from '../api';
 import { BlueprintIcon } from './BlueprintIcon';
 import {
@@ -26,9 +29,48 @@ import {
 interface DataExtractorViewProps {
   blueprints: Blueprint[];
   activeBlueprint: Blueprint | null;
+  records: StruxRecord[];
   onSelectBlueprint: (bp: Blueprint) => void;
   onRecordsCommitted: (blueprintId: string, count: number) => void;
   onBlueprintUpdated?: (bp: Blueprint) => void;
+}
+
+function normalizeMasterVal(val: unknown): string {
+  if (val === undefined || val === null) return '';
+  return String(val).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function computeClientMergedPreview(
+  existingData: Record<string, any>,
+  incomingData: Record<string, any>
+): Record<string, any> {
+  const merged: Record<string, any> = { ...existingData };
+  for (const [key, incVal] of Object.entries(incomingData)) {
+    if (incVal === undefined || incVal === null || incVal === '') continue;
+    if (Array.isArray(incVal)) {
+      if (incVal.length === 0) continue;
+      const existingArr = Array.isArray(existingData[key]) ? existingData[key] : [];
+      const seen = new Set(existingArr.map((x: any) => String(x).trim().toLowerCase()));
+      const combined = [...existingArr];
+      for (const item of incVal) {
+        const norm = String(item).trim().toLowerCase();
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          combined.push(item);
+        }
+      }
+      merged[key] = combined;
+    } else if (
+      typeof incVal === 'object' &&
+      existingData[key] &&
+      typeof existingData[key] === 'object'
+    ) {
+      merged[key] = { ...existingData[key], ...incVal };
+    } else {
+      merged[key] = incVal;
+    }
+  }
+  return merged;
 }
 
 const SAMPLE_UNSTRUCTURED_DUMPS: Record<string, { single: string; batch: string }> = {
@@ -88,6 +130,7 @@ Notes: Experiencing intermittent CUDA out-of-memory spikes when handling 64k con
 export function DataExtractorView({
   blueprints,
   activeBlueprint,
+  records,
   onSelectBlueprint,
   onRecordsCommitted,
   onBlueprintUpdated
@@ -102,26 +145,6 @@ export function DataExtractorView({
   const [isSavingHint, setIsSavingHint] = useState(false);
   const [savedHintSuccess, setSavedHintSuccess] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
-
-  React.useEffect(() => {
-    setBlueprintHint(selectedBp?.extraction_prompt_template || '');
-    setSavedHintSuccess(false);
-  }, [selectedBp?.id, selectedBp?.extraction_prompt_template]);
-
-  async function handleSaveBlueprintHint() {
-    if (!selectedBp) return;
-    setIsSavingHint(true);
-    try {
-      const updated = await api.updateBlueprint(selectedBp.id, {
-        extraction_prompt_template: blueprintHint.trim()
-      });
-      onBlueprintUpdated?.(updated);
-      setSavedHintSuccess(true);
-      setTimeout(() => setSavedHintSuccess(false), 3000);
-    } finally {
-      setIsSavingHint(false);
-    }
-  }
   const [isCommitting, setIsCommitting] = useState(false);
   const [stagedItems, setStagedItems] = useState<StagedExtractionItem[]>([]);
   const [jsonEditDrafts, setJsonEditDrafts] = useState<Record<string, string>>({});
@@ -138,6 +161,80 @@ export function DataExtractorView({
   const [manualPasteText, setManualPasteText] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const schemaKeys = useMemo(
+    () => Object.keys(selectedBp?.json_schema?.properties || {}),
+    [selectedBp]
+  );
+
+  const masterKeyField =
+    selectedBp?.ui_config?.masterKeyField ||
+    selectedBp?.ui_config?.primaryField ||
+    schemaKeys[0] ||
+    'title';
+
+  const existingByMasterKey = useMemo(() => {
+    const map = new Map<string, StruxRecord>();
+    if (!selectedBp) return map;
+    for (const r of records) {
+      if (r.blueprint_id !== selectedBp.id) continue;
+      const k = normalizeMasterVal(r.data[masterKeyField]);
+      if (k && !map.has(k)) {
+        map.set(k, r);
+      }
+    }
+    return map;
+  }, [records, selectedBp?.id, masterKeyField]);
+
+  React.useEffect(() => {
+    setBlueprintHint(selectedBp?.extraction_prompt_template || '');
+    setSavedHintSuccess(false);
+  }, [selectedBp?.id, selectedBp?.extraction_prompt_template]);
+
+  async function handleChangeMasterKeyField(newMasterKey: string) {
+    if (!selectedBp) return;
+    const updated = await api.updateBlueprint(selectedBp.id, {
+      ui_config: {
+        ...selectedBp.ui_config,
+        masterKeyField: newMasterKey
+      }
+    });
+    onBlueprintUpdated?.(updated);
+
+    // Re-evaluate staged matches against the new master key
+    setStagedItems((prev) =>
+      prev.map((item) => {
+        const norm = normalizeMasterVal(item.data[newMasterKey]);
+        const match = norm
+          ? records.find(
+              (r) =>
+                r.blueprint_id === selectedBp.id &&
+                normalizeMasterVal(r.data[newMasterKey]) === norm
+            ) || null
+          : null;
+        return {
+          ...item,
+          matchedRecord: match,
+          mergeStrategy: match ? 'merge' : 'create_new'
+        };
+      })
+    );
+  }
+
+  async function handleSaveBlueprintHint() {
+    if (!selectedBp) return;
+    setIsSavingHint(true);
+    try {
+      const updated = await api.updateBlueprint(selectedBp.id, {
+        extraction_prompt_template: blueprintHint.trim()
+      });
+      onBlueprintUpdated?.(updated);
+      setSavedHintSuccess(true);
+      setTimeout(() => setSavedHintSuccess(false), 3000);
+    } finally {
+      setIsSavingHint(false);
+    }
+  }
 
   function handleLoadSample(targetMode: 'single' | 'batch') {
     if (!selectedBp) return;
@@ -188,7 +285,7 @@ export function DataExtractorView({
       setCopiedPrompt(true);
       setBanner({
         type: 'success',
-        text: `Tailored "${selectedBp.name}" extraction prompt written to your clipboard! Paste it into your chatbot, copy the JSON output, then click "2. Read & Parse Output from Clipboard".`
+        text: `Tailored "${selectedBp.name}" extraction prompt written to your clipboard! Paste it into your chatbot, copy the JSON output, then click "2. Read & Parse Clipboard".`
       });
       setTimeout(() => setCopiedPrompt(false), 3500);
     } catch (err: any) {
@@ -198,6 +295,27 @@ export function DataExtractorView({
         text: `Browser blocked direct clipboard write (${err.message}). Expanded tailored prompt on the right so you can copy it manually.`
       });
     }
+  }
+
+  function enrichWithMasterKeyMatch(
+    itemData: Record<string, any>,
+    raw_source: string,
+    isValid: boolean,
+    validationErrors: string[],
+    tempId: string
+  ): StagedExtractionItem {
+    const normKey = normalizeMasterVal(itemData[masterKeyField]);
+    const matched = normKey ? existingByMasterKey.get(normKey) || null : null;
+    return {
+      tempId,
+      data: itemData,
+      raw_source,
+      isValid,
+      validationErrors,
+      selected: true,
+      matchedRecord: matched,
+      mergeStrategy: matched ? 'merge' : 'create_new'
+    };
   }
 
   async function processExtractedClipboardText(clipText: string) {
@@ -216,14 +334,13 @@ export function DataExtractorView({
     const validatedList: StagedExtractionItem[] = await Promise.all(
       rawArray.map(async (obj, idx) => {
         const validation = await api.validateRecord(selectedBp.id, obj);
-        return {
-          tempId: `clip-${Date.now()}-${idx}`,
-          data: obj,
-          raw_source: rawText.trim() || 'Extracted via External Chatbot Clipboard Bridge',
-          isValid: validation.isValid,
-          validationErrors: validation.validationErrors,
-          selected: true
-        };
+        return enrichWithMasterKeyMatch(
+          obj,
+          rawText.trim() || 'Extracted via External Chatbot Clipboard Bridge',
+          validation.isValid,
+          validation.validationErrors,
+          `clip-${Date.now()}-${idx}`
+        );
       })
     );
 
@@ -238,9 +355,10 @@ export function DataExtractorView({
     setManualPasteText('');
 
     const validCount = validatedList.filter((i) => i.isValid).length;
+    const matchedCount = validatedList.filter((i) => i.matchedRecord).length;
     setBanner({
       type: validCount === validatedList.length ? 'success' : 'warning',
-      text: `Parsed ${validatedList.length} JSON object(s) from clipboard (${validCount} schema-valid)! Review in the Staging Inspector below and click Commit.`
+      text: `Parsed ${validatedList.length} JSON object(s) from clipboard (${validCount} schema-valid, ${matchedCount} matched existing "${masterKeyField}" for merge/update)!`
     });
   }
 
@@ -270,17 +388,15 @@ export function DataExtractorView({
         custom_instructions: customInstructions.trim() || undefined
       });
 
-      const staged: StagedExtractionItem[] = result.items.map((item, idx) => {
-        const tempId = `staged-${Date.now()}-${idx}`;
-        return {
-          tempId,
-          data: item.data,
-          raw_source: item.raw_source,
-          isValid: item.isValid,
-          validationErrors: item.validationErrors,
-          selected: true
-        };
-      });
+      const staged: StagedExtractionItem[] = result.items.map((item, idx) =>
+        enrichWithMasterKeyMatch(
+          item.data,
+          item.raw_source,
+          item.isValid,
+          item.validationErrors,
+          `staged-${Date.now()}-${idx}`
+        )
+      );
 
       const drafts: Record<string, string> = {};
       for (const s of staged) {
@@ -290,11 +406,12 @@ export function DataExtractorView({
       setStagedItems(staged);
       setJsonEditDrafts(drafts);
       setPromptPreview(result.promptUsed);
+      const matchedCount = staged.filter((s) => s.matchedRecord).length;
       setBanner({
         type: result.simulated ? 'warning' : 'success',
         text: result.simulated
-          ? `Extracted ${staged.length} structured JSON object(s) using local schema-locked parser (or use the Chatbot Clipboard Bridge on the left). Review in the Staging Inspector below.`
-          : `Extracted ${staged.length} schema-validated JSON object(s) via Gemini 3.8 Flash responseSchema!`
+          ? `Extracted ${staged.length} object(s) (${matchedCount} matched by Master Key "${masterKeyField}"). Review in Staging Inspector below.`
+          : `Extracted ${staged.length} schema-validated object(s) via Gemini 3.8 Flash (${matchedCount} matched by Master Key "${masterKeyField}")!`
       });
     } catch (err: any) {
       setBanner({
@@ -313,6 +430,9 @@ export function DataExtractorView({
     try {
       const parsed = JSON.parse(newJsonText);
       const validation = await api.validateRecord(selectedBp.id, parsed);
+      const normKey = normalizeMasterVal(parsed[masterKeyField]);
+      const matched = normKey ? existingByMasterKey.get(normKey) || null : null;
+
       setStagedItems((prev) =>
         prev.map((item) =>
           item.tempId === tempId
@@ -320,7 +440,9 @@ export function DataExtractorView({
                 ...item,
                 data: parsed,
                 isValid: validation.isValid,
-                validationErrors: validation.validationErrors
+                validationErrors: validation.validationErrors,
+                matchedRecord: matched,
+                mergeStrategy: matched ? item.mergeStrategy || 'merge' : 'create_new'
               }
             : item
         )
@@ -351,7 +473,8 @@ export function DataExtractorView({
         selectedBp.id,
         toCommit.map((i) => ({
           data: i.data,
-          raw_source: i.raw_source
+          raw_source: i.raw_source,
+          strategy: i.matchedRecord ? i.mergeStrategy || 'merge' : 'create_new'
         }))
       );
       setStagedItems([]);
@@ -365,6 +488,12 @@ export function DataExtractorView({
       setIsCommitting(false);
     }
   }
+
+  const validSelectedItems = stagedItems.filter((i) => i.selected && i.isValid);
+  const mergeOrUpdateCount = validSelectedItems.filter(
+    (i) => i.matchedRecord && i.mergeStrategy !== 'create_new'
+  ).length;
+  const insertNewCount = validSelectedItems.length - mergeOrUpdateCount;
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
@@ -396,24 +525,43 @@ export function DataExtractorView({
             </button>
           </div>
 
-          {/* Blueprint Selector */}
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-              Active Target Blueprint
-            </label>
-            <div className="grid grid-cols-1 gap-2">
+          {/* Blueprint Selector + Master Key Selector */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+            <div className="sm:col-span-7">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                Active Target Blueprint
+              </label>
               <select
                 value={selectedBp?.id || ''}
                 onChange={(e) => {
                   const found = blueprints.find((b) => b.id === e.target.value);
                   if (found) onSelectBlueprint(found);
                 }}
-                className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none px-3 py-2.5 text-sm text-white"
+                className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none px-3 py-2 text-xs text-white"
               >
                 {blueprints.map((bp) => (
                   <option key={bp.id} value={bp.id}>
-                    {bp.name} (v{bp.ui_config?.version || '1.0'} —{' '}
-                    {Object.keys(bp.json_schema?.properties || {}).length} fields)
+                    {bp.name} ({Object.keys(bp.json_schema?.properties || {}).length} fields)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="sm:col-span-5">
+              <label
+                className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-amber-400 mb-1.5"
+                title="Matches extracted items against existing collection entries to merge or update instead of duplicating"
+              >
+                <Key className="w-3 h-3" /> Master Key (Merge ID)
+              </label>
+              <select
+                value={masterKeyField}
+                onChange={(e) => handleChangeMasterKeyField(e.target.value)}
+                className="w-full rounded-lg bg-slate-950 border border-amber-500/50 focus:border-amber-400 focus:outline-none px-2.5 py-2 text-xs font-mono text-amber-300"
+              >
+                {schemaKeys.map((k) => (
+                  <option key={k} value={k}>
+                    🔑 {k}
                   </option>
                 ))}
               </select>
@@ -480,8 +628,8 @@ export function DataExtractorView({
             <textarea
               value={rawText}
               onChange={(e) => setRawText(e.target.value)}
-              rows={8}
-              placeholder="Paste messy notes, meeting transcripts, markdown brain-dumps, or log snippets here..."
+              rows={7}
+              placeholder="Paste messy notes, meeting transcripts, markdown brain-dumps, or updates to existing records here..."
               className="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none p-3.5 text-xs text-slate-100 placeholder-slate-500 leading-relaxed"
             />
           </div>
@@ -642,7 +790,7 @@ export function DataExtractorView({
         </div>
       </div>
 
-      {/* Right Column: Staging Review & Diff Inspector UI */}
+      {/* Right Column: Staging Review, Master Key Resolution & Diff Inspector UI */}
       <div className="xl:col-span-7 space-y-5">
         {banner && (
           <div
@@ -701,11 +849,16 @@ export function DataExtractorView({
                 <Code2 className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-white">
-                  Staging Review & Validation Diff
-                </h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-semibold text-white">
+                    Staging Review & Master-Key Merge Inspector
+                  </h3>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[11px] font-mono">
+                    <Key className="w-3 h-3" /> {masterKeyField}
+                  </span>
+                </div>
                 <p className="text-xs text-slate-400">
-                  Inspect, edit, and schema-validate extracted JSON objects before committing to SQLite
+                  Matches extracted objects against existing entries by Master Key to merge non-empty fields or insert new entries
                 </p>
               </div>
             </div>
@@ -713,18 +866,13 @@ export function DataExtractorView({
             {stagedItems.length > 0 && (
               <button
                 onClick={handleCommitSelected}
-                disabled={
-                  isCommitting ||
-                  stagedItems.filter((i) => i.selected && i.isValid).length === 0
-                }
+                disabled={isCommitting || validSelectedItems.length === 0}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white shadow-md transition cursor-pointer"
               >
                 <Database className="w-3.5 h-3.5" />
                 {isCommitting
                   ? 'Committing...'
-                  : `Commit ${
-                      stagedItems.filter((i) => i.selected && i.isValid).length
-                    } Valid Record(s) to Collection`}
+                  : `Commit (${insertNewCount} New, ${mergeOrUpdateCount} Merge/Update)`}
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
@@ -740,98 +888,159 @@ export function DataExtractorView({
                   No Extracted Objects in Staging Yet
                 </h4>
                 <p className="text-xs text-slate-400 mt-1">
-                  Paste messy text on the left, then either click <strong>Extract via API</strong> or use the <strong>Chatbot Clipboard Bridge</strong> (<em>1. Copy Tailored Prompt</em> → paste into your chatbot → <em>2. Read & Parse Clipboard</em>).
+                  Paste messy text on the left, then either click <strong>Extract via API</strong> or use the <strong>Chatbot Clipboard Bridge</strong>. Items matching an existing <code>{masterKeyField}</code> will automatically stage for smart field merging!
                 </p>
               </div>
             </div>
           ) : (
             <div className="space-y-4">
-              {stagedItems.map((item, idx) => (
-                <div
-                  key={item.tempId}
-                  className={`rounded-xl border p-4 transition ${
-                    item.isValid
-                      ? 'bg-slate-950/70 border-slate-800'
-                      : 'bg-rose-950/20 border-rose-500/50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={item.selected}
-                        onChange={(e) =>
-                          setStagedItems((prev) =>
-                            prev.map((p) =>
-                              p.tempId === item.tempId ? { ...p, selected: e.target.checked } : p
+              {stagedItems.map((item, idx) => {
+                const matched = item.matchedRecord;
+                const strategy = item.mergeStrategy || (matched ? 'merge' : 'create_new');
+                const previewMergedObj =
+                  matched && strategy === 'merge'
+                    ? computeClientMergedPreview(matched.data, item.data)
+                    : item.data;
+
+                return (
+                  <div
+                    key={item.tempId}
+                    className={`rounded-xl border p-4 transition ${
+                      !item.isValid
+                        ? 'bg-rose-950/20 border-rose-500/50'
+                        : matched && strategy !== 'create_new'
+                        ? 'bg-amber-950/15 border-amber-500/40'
+                        : 'bg-slate-950/70 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={item.selected}
+                          onChange={(e) =>
+                            setStagedItems((prev) =>
+                              prev.map((p) =>
+                                p.tempId === item.tempId ? { ...p, selected: e.target.checked } : p
+                              )
                             )
-                          )
-                        }
-                        className="w-4 h-4 rounded accent-indigo-500 cursor-pointer"
-                      />
-                      <span className="text-xs font-semibold text-white">
-                        Staged Object #{idx + 1}:{' '}
-                        <span className="text-indigo-300">
-                          {String(
-                            item.data[selectedBp?.ui_config?.primaryField || 'title'] ||
-                              Object.values(item.data)[0] ||
-                              'Record'
-                          )}
+                          }
+                          className="w-4 h-4 rounded accent-indigo-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-semibold text-white">
+                          #{idx + 1}:{' '}
+                          <span className="text-indigo-300 font-mono">
+                            {String(
+                              item.data[masterKeyField] ||
+                                item.data[selectedBp?.ui_config?.primaryField || 'title'] ||
+                                'Record'
+                            )}
+                          </span>
                         </span>
-                      </span>
-                      {item.isValid ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                          <CheckCircle2 className="w-3 h-3" /> Schema Valid
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/20 text-rose-300 border border-rose-500/40">
-                          <AlertTriangle className="w-3 h-3" /> Validation Error
-                        </span>
-                      )}
-                    </div>
 
-                    <button
-                      onClick={() =>
-                        setStagedItems((prev) => prev.filter((p) => p.tempId !== item.tempId))
-                      }
-                      className="p-1 text-slate-500 hover:text-rose-400 transition cursor-pointer"
-                      title="Discard staged object"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                        {/* Master Key Match Badge */}
+                        {matched ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            <GitMerge className="w-3 h-3" /> Matches Existing `{masterKeyField}`
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                            <PlusCircle className="w-3 h-3" /> New Entry
+                          </span>
+                        )}
 
-                  {!item.isValid && item.validationErrors.length > 0 && (
-                    <div className="mb-3 p-2.5 rounded-lg bg-rose-950/60 border border-rose-500/40 text-[11px] font-mono text-rose-200 space-y-1">
-                      {item.validationErrors.map((err, i) => (
-                        <div key={i}>• {err}</div>
-                      ))}
-                    </div>
-                  )}
+                        {item.isValid ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            <CheckCircle2 className="w-3 h-3" /> Schema Valid
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                            <AlertTriangle className="w-3 h-3" /> Validation Error
+                          </span>
+                        )}
+                      </div>
 
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-                    <div className="lg:col-span-5 flex flex-col">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
-                        Source Text Reference
-                      </span>
-                      <div className="flex-1 p-3 rounded-lg bg-slate-900/90 border border-slate-800/80 text-xs text-slate-400 whitespace-pre-wrap max-h-60 overflow-y-auto">
-                        {item.raw_source}
+                      <div className="flex items-center gap-2">
+                        {matched && (
+                          <select
+                            value={strategy}
+                            onChange={(e) =>
+                              setStagedItems((prev) =>
+                                prev.map((p) =>
+                                  p.tempId === item.tempId
+                                    ? {
+                                        ...p,
+                                        mergeStrategy: e.target.value as StagedMergeStrategy
+                                      }
+                                    : p
+                                )
+                              )
+                            }
+                            className="rounded-lg bg-slate-900 border border-amber-500/40 px-2.5 py-1 text-xs font-medium text-amber-200"
+                          >
+                            <option value="merge">Smart Merge (Keep Existing + Update New)</option>
+                            <option value="overwrite">Overwrite Existing Record</option>
+                            <option value="create_new">Insert as Separate Duplicate</option>
+                          </select>
+                        )}
+
+                        <button
+                          onClick={() =>
+                            setStagedItems((prev) => prev.filter((p) => p.tempId !== item.tempId))
+                          }
+                          className="p-1 text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                          title="Discard staged object"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
-                    <div className="lg:col-span-7 flex flex-col">
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
-                        Editable Structured JSON Payload (Live Schema Check)
-                      </span>
-                      <textarea
-                        value={jsonEditDrafts[item.tempId] ?? JSON.stringify(item.data, null, 2)}
-                        onChange={(e) => handleStageJsonChange(item.tempId, e.target.value)}
-                        rows={9}
-                        className="w-full rounded-lg bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:outline-none p-3 font-mono text-xs text-emerald-300"
-                      />
+
+                    {!item.isValid && item.validationErrors.length > 0 && (
+                      <div className="mb-3 p-2.5 rounded-lg bg-rose-950/60 border border-rose-500/40 text-[11px] font-mono text-rose-200 space-y-1">
+                        {item.validationErrors.map((err, i) => (
+                          <div key={i}>• {err}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+                      <div className="lg:col-span-5 flex flex-col">
+                        {matched && strategy === 'merge' ? (
+                          <>
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 mb-1">
+                              Existing Record in DB → Resulting Merged Preview
+                            </span>
+                            <pre className="flex-1 p-3 rounded-lg bg-slate-900/95 border border-amber-500/30 text-[11px] font-mono text-amber-200 whitespace-pre-wrap max-h-60 overflow-y-auto">
+                              {JSON.stringify(previewMergedObj, null, 2)}
+                            </pre>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                              Source Text Reference
+                            </span>
+                            <div className="flex-1 p-3 rounded-lg bg-slate-900/90 border border-slate-800/80 text-xs text-slate-400 whitespace-pre-wrap max-h-60 overflow-y-auto">
+                              {item.raw_source}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      <div className="lg:col-span-7 flex flex-col">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                          Incoming Extracted JSON Payload (Editable)
+                        </span>
+                        <textarea
+                          value={jsonEditDrafts[item.tempId] ?? JSON.stringify(item.data, null, 2)}
+                          onChange={(e) => handleStageJsonChange(item.tempId, e.target.value)}
+                          rows={9}
+                          className="w-full rounded-lg bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:outline-none p-3 font-mono text-xs text-emerald-300"
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

@@ -81,6 +81,9 @@ export function SchemaArchitectView({
   const [icon, setIcon] = useState(activeBlueprint?.ui_config?.icon || 'Swords');
   const [version, setVersion] = useState(activeBlueprint?.ui_config?.version || '1.0.0');
   const [primaryField, setPrimaryField] = useState(activeBlueprint?.ui_config?.primaryField || 'title');
+  const [masterKeyField, setMasterKeyField] = useState(
+    activeBlueprint?.ui_config?.masterKeyField || activeBlueprint?.ui_config?.primaryField || 'title'
+  );
   const [subtitleField, setSubtitleField] = useState(activeBlueprint?.ui_config?.subtitleField || '');
   const [extractionRules, setExtractionRules] = useState(
     activeBlueprint?.extraction_prompt_template || ''
@@ -116,7 +119,9 @@ export function SchemaArchitectView({
     setDescription(bp.description);
     setIcon(bp.ui_config?.icon || 'Sparkles');
     setVersion(bp.ui_config?.version || '1.0.0');
-    setPrimaryField(bp.ui_config?.primaryField || Object.keys(bp.json_schema.properties || {})[0] || '');
+    const resolvedPrimary = bp.ui_config?.primaryField || Object.keys(bp.json_schema.properties || {})[0] || '';
+    setPrimaryField(resolvedPrimary);
+    setMasterKeyField(bp.ui_config?.masterKeyField || resolvedPrimary);
     setSubtitleField(bp.ui_config?.subtitleField || '');
     setExtractionRules(bp.extraction_prompt_template || '');
 
@@ -143,6 +148,7 @@ export function SchemaArchitectView({
     setIcon('Sparkles');
     setVersion('1.0.0');
     setPrimaryField('title');
+    setMasterKeyField('title');
     setSubtitleField('');
     setExtractionRules('Keep extracted values concise and factual.');
     const initialRows: EditableFieldRow[] = [
@@ -377,6 +383,9 @@ export function SchemaArchitectView({
         .map(([k]) => k)
         .slice(0, 3);
 
+      const resolvedPrimary =
+        primaryField || Object.keys(finalSchema.properties || {})[0] || 'title';
+
       const payload: Partial<Blueprint> = {
         name: name.trim() || 'Untitled Blueprint',
         description: description.trim(),
@@ -385,7 +394,8 @@ export function SchemaArchitectView({
         ui_config: {
           icon,
           version: version.trim() || '1.0.0',
-          primaryField: primaryField || Object.keys(finalSchema.properties || {})[0] || 'title',
+          primaryField: resolvedPrimary,
+          masterKeyField: masterKeyField || resolvedPrimary,
           subtitleField: subtitleField || undefined,
           badgeFields,
           colorAccent: 'indigo'
@@ -807,7 +817,7 @@ export function SchemaArchitectView({
 
           {/* Metadata Inputs */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-            <div className="md:col-span-5">
+            <div className="md:col-span-4">
               <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1">
                 Blueprint Title
               </label>
@@ -819,7 +829,7 @@ export function SchemaArchitectView({
               />
             </div>
 
-            <div className="md:col-span-3">
+            <div className="md:col-span-2">
               <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1">
                 Icon
               </label>
@@ -860,6 +870,26 @@ export function SchemaArchitectView({
                 {availableFieldNames.map((fn) => (
                   <option key={fn} value={fn}>
                     {fn}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <label
+                className="block text-[11px] font-semibold uppercase tracking-wider text-amber-400 mb-1"
+                title="Unique key used to match, merge, or update existing entries during ingestion"
+              >
+                Master Key (Merge ID)
+              </label>
+              <select
+                value={masterKeyField || primaryField}
+                onChange={(e) => setMasterKeyField(e.target.value)}
+                className="w-full rounded-lg bg-slate-950 border border-amber-500/50 focus:border-amber-400 focus:outline-none px-2.5 py-2 text-xs font-mono text-amber-300"
+              >
+                {availableFieldNames.map((fn) => (
+                  <option key={fn} value={fn}>
+                    🔑 {fn}
                   </option>
                 ))}
               </select>

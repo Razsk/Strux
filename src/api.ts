@@ -112,13 +112,23 @@ export const api = {
 
   createRecordsBatch: (
     blueprint_id: string,
-    items: Array<{ data: Record<string, any>; raw_source?: string | null }>
+    items: Array<{
+      data: Record<string, any>;
+      raw_source?: string | null;
+      strategy?: 'merge' | 'overwrite' | 'create_new';
+    }>
   ) =>
     fetch('/api/records', {
       method: 'POST',
       headers: getHeaders(),
       body: JSON.stringify({ blueprint_id, items })
-    }).then((r) => handleRes<StruxRecord[]>(r)),
+    }).then((r) =>
+      handleRes<{
+        records: StruxRecord[];
+        insertedCount: number;
+        mergedCount: number;
+      }>(r)
+    ),
 
   updateRecord: (id: string, data: Record<string, any>, raw_source?: string | null) =>
     fetch(`/api/records/${id}`, {

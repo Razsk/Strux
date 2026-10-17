@@ -566,27 +566,143 @@ export function createRecord(blueprint_id: string, data: Record<string, any>, ra
   return getRecordById(id)!;
 }
 
-export function createRecordsBatch(blueprint_id: string, items: Array<{ data: Record<string, any>; raw_source?: string | null }>): StruxRecord[] {
-  const insert = db.prepare(`
+export function normalizeMasterKeyValue(val: unknown): string {
+  if (val === undefined || val === null) return '';
+  return String(val)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+export function mergeRecordData(
+  existingData: Record<string, any>,
+  incomingData: Record<string, any>
+): Record<string, any> {
+  const merged: Record<string, any> = { ...existingData };
+
+  for (const [key, incVal] of Object.entries(incomingData)) {
+    if (incVal === undefined || incVal === null || incVal === '') {
+      continue;
+    }
+
+    if (Array.isArray(incVal)) {
+      if (incVal.length === 0) continue;
+      const existingArr = Array.isArray(existingData[key]) ? existingData[key] : [];
+      const seen = new Set(existingArr.map((x: any) => String(x).trim().toLowerCase()));
+      const combined = [...existingArr];
+      for (const item of incVal) {
+        const norm = String(item).trim().toLowerCase();
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          combined.push(item);
+        }
+      }
+      merged[key] = combined;
+    } else if (typeof incVal === 'object' && existingData[key] && typeof existingData[key] === 'object') {
+      merged[key] = { ...existingData[key], ...incVal };
+    } else {
+      merged[key] = incVal;
+    }
+  }
+
+  return merged;
+}
+
+export function createRecordsBatch(
+  blueprint_id: string,
+  items: Array<{
+    data: Record<string, any>;
+    raw_source?: string | null;
+    strategy?: 'merge' | 'overwrite' | 'create_new';
+  }>
+): { records: StruxRecord[]; insertedCount: number; mergedCount: number } {
+  const blueprint = getBlueprintById(blueprint_id);
+  const schemaKeys = Object.keys(blueprint?.json_schema?.properties || {});
+  const masterKeyField =
+    blueprint?.ui_config?.masterKeyField ||
+    blueprint?.ui_config?.primaryField ||
+    schemaKeys[0] ||
+    'title';
+
+  const existingRecords = getRecords(blueprint_id);
+  const existingByKey = new Map<string, StruxRecord>();
+  for (const rec of existingRecords) {
+    const normKey = normalizeMasterKeyValue(rec.data[masterKeyField]);
+    if (normKey && !existingByKey.has(normKey)) {
+      existingByKey.set(normKey, rec);
+    }
+  }
+
+  const insertStmt = db.prepare(`
     INSERT INTO records (id, blueprint_id, data, raw_source, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const createdIds: string[] = [];
+  const updateStmt = db.prepare(`
+    UPDATE records
+    SET data = ?,
+        raw_source = ?,
+        updated_at = ?
+    WHERE id = ?
+  `);
+
+  const touchedIds: string[] = [];
+  let insertedCount = 0;
+  let mergedCount = 0;
   const now = new Date().toISOString();
 
   db.exec('BEGIN TRANSACTION');
   try {
     for (const item of items) {
-      const id = crypto.randomUUID();
-      insert.run(
-        id,
-        blueprint_id,
-        JSON.stringify(item.data),
-        item.raw_source ?? null,
-        now,
-        now
-      );
-      createdIds.push(id);
+      const strategy = item.strategy || 'merge';
+      const incomingMasterVal = normalizeMasterKeyValue(item.data[masterKeyField]);
+      const matched =
+        strategy !== 'create_new' && incomingMasterVal
+          ? existingByKey.get(incomingMasterVal)
+          : undefined;
+
+      if (matched) {
+        const finalData =
+          strategy === 'overwrite'
+            ? item.data
+            : mergeRecordData(matched.data, item.data);
+
+        const combinedRawSource =
+          item.raw_source && matched.raw_source && item.raw_source !== matched.raw_source
+            ? `${matched.raw_source}\n\n--- [Merged Update ${now}] ---\n${item.raw_source}`
+            : item.raw_source ?? matched.raw_source ?? null;
+
+        updateStmt.run(
+          JSON.stringify(finalData),
+          combinedRawSource,
+          now,
+          matched.id
+        );
+        matched.data = finalData;
+        touchedIds.push(matched.id);
+        mergedCount++;
+      } else {
+        const id = crypto.randomUUID();
+        insertStmt.run(
+          id,
+          blueprint_id,
+          JSON.stringify(item.data),
+          item.raw_source ?? null,
+          now,
+          now
+        );
+        if (incomingMasterVal) {
+          existingByKey.set(incomingMasterVal, {
+            id,
+            blueprint_id,
+            data: item.data,
+            raw_source: item.raw_source ?? null,
+            created_at: now,
+            updated_at: now
+          });
+        }
+        touchedIds.push(id);
+        insertedCount++;
+      }
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -594,7 +710,11 @@ export function createRecordsBatch(blueprint_id: string, items: Array<{ data: Re
     throw err;
   }
 
-  return createdIds.map((id) => getRecordById(id)!);
+  return {
+    records: touchedIds.map((id) => getRecordById(id)!),
+    insertedCount,
+    mergedCount
+  };
 }
 
 export function updateRecord(id: string, data: Record<string, any>, raw_source?: string | null): StruxRecord | null {

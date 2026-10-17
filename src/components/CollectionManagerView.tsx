@@ -286,13 +286,22 @@ export function CollectionManagerView({
         }
 
         if (objects.length > 0) {
-          await api.createRecordsBatch(
+          const result = await api.createRecordsBatch(
             selectedBp.id,
-            objects.map((o) => ({ data: o, raw_source: `Imported from ${file.name}` }))
+            objects.map((o) => ({
+              data: o,
+              raw_source: `Imported from ${file.name}`,
+              strategy: 'merge' as const
+            }))
           );
           onRefreshRecords();
-          setStatusMsg(`Imported ${objects.length} record(s) from ${file.name}`);
-          setTimeout(() => setStatusMsg(null), 4000);
+          const summaryParts: string[] = [];
+          if (result.insertedCount > 0) summaryParts.push(`${result.insertedCount} new`);
+          if (result.mergedCount > 0) summaryParts.push(`${result.mergedCount} merged by Master Key`);
+          setStatusMsg(
+            `Imported ${objects.length} record(s) from ${file.name} (${summaryParts.join(', ') || '0 changes'})`
+          );
+          setTimeout(() => setStatusMsg(null), 5000);
         }
       } catch (err: any) {
         alert(`Import failed: ${err.message}`);
@@ -302,6 +311,7 @@ export function CollectionManagerView({
   }
 
   const primaryKey = selectedBp?.ui_config?.primaryField || schemaKeys[0] || 'title';
+  const masterKey = selectedBp?.ui_config?.masterKeyField || primaryKey;
   const subtitleKey = selectedBp?.ui_config?.subtitleField || schemaKeys[1] || '';
   const badgeKeys = selectedBp?.ui_config?.badgeFields || [];
 
@@ -669,6 +679,11 @@ export function CollectionManagerView({
                       className="py-3 px-3 cursor-pointer hover:text-white select-none whitespace-nowrap"
                     >
                       <div className="inline-flex items-center gap-1">
+                        {key === masterKey && (
+                          <span title="Master Key (Merge ID)" className="text-amber-400">
+                            🔑
+                          </span>
+                        )}
                         <span>{key}</span>
                         <ArrowUpDown className="w-3 h-3 text-slate-600" />
                       </div>

@@ -22,6 +22,7 @@ export interface BlueprintUiConfig {
   icon: string;
   version: string;
   primaryField: string;
+  masterKeyField?: string;
   subtitleField?: string;
   badgeFields?: string[];
   colorAccent?: string;
@@ -56,6 +57,8 @@ export interface SavedPrompt {
   created_at?: string;
 }
 
+export type StagedMergeStrategy = 'merge' | 'overwrite' | 'create_new';
+
 export interface StagedExtractionItem {
   tempId: string;
   data: Record<string, any>;
@@ -63,6 +66,8 @@ export interface StagedExtractionItem {
   isValid: boolean;
   validationErrors: string[];
   selected: boolean;
+  matchedRecord?: StruxRecord | null;
+  mergeStrategy?: StagedMergeStrategy;
 }
 
 export interface ContextCartItem {

@@ -6,6 +6,7 @@ import {
   createBlueprint,
   getRecords,
   createRecord,
+  createRecordsBatch,
   updateRecord,
   deleteRecord,
   getSavedPrompts
@@ -177,4 +178,55 @@ describe('Strux Core Lifecycle & SRD Verification', () => {
     expect(Array.isArray(extracted)).toBe(true);
     expect(extracted[0].title).toBe('The Sunken Crypt');
   });
+
+  it('merges and updates existing records by Master Key in createRecordsBatch', () => {
+    const rpgBp = getBlueprintById('bp-ttrpg-encounters')!;
+
+    // 1. Insert initial record via batch
+    const firstBatch = createRecordsBatch(rpgBp.id, [
+      {
+        data: {
+          title: 'The Crimson Relay',
+          location: 'Orbital Station 7',
+          intensity_level: 'Medium',
+          encounter_type: 'Investigation',
+          motive: 'Intercept transmission',
+          clues: ['Encrypted data pad']
+        },
+        raw_source: 'Initial notes',
+        strategy: 'merge'
+      }
+    ]);
+    expect(firstBatch.insertedCount).toBe(1);
+    expect(firstBatch.mergedCount).toBe(0);
+    const createdId = firstBatch.records[0].id;
+
+    // 2. Batch import an update with the same Master Key ('title': 'the crimson relay' case-insensitive)
+    const secondBatch = createRecordsBatch(rpgBp.id, [
+      {
+        data: {
+          title: '  the crimson relay ',
+          intensity_level: 'Deadly',
+          clues: ['Voice log fragment']
+        },
+        raw_source: 'Updated session notes',
+        strategy: 'merge'
+      }
+    ]);
+    expect(secondBatch.insertedCount).toBe(0);
+    expect(secondBatch.mergedCount).toBe(1);
+    expect(secondBatch.records[0].id).toBe(createdId);
+    // Preserved existing field (location) + updated field (intensity_level) + merged array (clues)
+    expect(secondBatch.records[0].data.location).toBe('Orbital Station 7');
+    expect(secondBatch.records[0].data.intensity_level).toBe('Deadly');
+    expect(secondBatch.records[0].data.clues).toEqual([
+      'Encrypted data pad',
+      'Voice log fragment'
+    ]);
+
+    // Cleanup test record
+    deleteRecord(createdId);
+  });
 });
+
+

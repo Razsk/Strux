@@ -363,6 +363,7 @@ export function App() {
             <DataExtractorView
               blueprints={blueprints}
               activeBlueprint={activeBlueprint}
+              records={records}
               onSelectBlueprint={(bp) => setActiveBlueprint(bp)}
               onBlueprintUpdated={(updated) => refreshBlueprints(updated)}
               onRecordsCommitted={async (bpId) => {
