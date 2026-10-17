@@ -4,14 +4,20 @@ import fs from 'fs';
 import crypto from 'crypto';
 import type { Blueprint, StruxRecord, SavedPrompt } from '../src/types.ts';
 
-const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'data', 'strux.db');
-const dbDir = path.dirname(dbPath);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+const isTestEnv = Boolean(process.env.VITEST || process.env.NODE_ENV === 'test');
+const dbPath =
+  process.env.DB_PATH || (isTestEnv ? ':memory:' : path.join(process.cwd(), 'data', 'strux.db'));
+if (dbPath !== ':memory:') {
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
 }
 
 export const db = new DatabaseSync(dbPath);
-db.exec('PRAGMA journal_mode = WAL;');
+if (dbPath !== ':memory:') {
+  db.exec('PRAGMA journal_mode = WAL;');
+}
 db.exec('PRAGMA foreign_keys = ON;');
 
 export function initDb() {
